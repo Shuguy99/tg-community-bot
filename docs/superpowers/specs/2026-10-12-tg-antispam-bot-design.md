@@ -87,7 +87,10 @@ tg-bot/
 │  ├─ services/
 │  │  ├─ subscriptions.py      # тарифы, лимиты, активация
 │  │  ├─ outgoing.py           # очередь исходящих вызовов + rate-limit 25 req/s
-│  │  └─ stats_service.py      # агрегация
+│  │  ├─ stats_service.py      # агрегация
+│  │  └─ payments/
+│  │     ├─ provider.py        # интерфейс PaymentProvider
+│  │     └─ stars.py           # реализация Telegram Stars (v1)
 │  ├─ keyboards/
 │  └─ scheduler/jobs.py
 └─ tests/
@@ -249,7 +252,27 @@ dup:{chat_id}:{user_id}      -> хэш текст→ts, SETEX на окно; п�
 
 `price_stars` и `features` — в `tier_limits`, меняются без релиза.
 
-### Поток оплаты
+### Провайдеры оплаты
+Оплата идёт через интерфейс `PaymentProvider`, чтобы добавить вендора без переписывания
+логики тарифов:
+
+```
+PaymentProvider:
+  create_invoice(chat_id, plan, price) -> invoice
+  handle_pre_checkout(query) -> bool
+  handle_payment(update) -> PaymentResult   # идемпотентно
+```
+
+- **v1: реализация `StarsProvider`** (Telegram Stars, XTR) — самый низкий барьер,
+  без юрлица, работает в любой стране.
+- **Задел:** `CryptoBotProvider` (USDT/TON) и `StripeProvider` (Web App) — отдельными
+  итерациями. Stripe требует юрлица и доступности в стране плательщика; CryptoBot — сторонний
+  кастодиальный сервис и не гарантирует API-рекуррент.
+- Активация подписки одна для всех провайдеров: идемпотентный upsert в `subscriptions` по
+  `telegram_payment_charge_id` (для не-Stars провайдеров — по их `external_payment_id`,
+  поле добавляется при реализации).
+
+### Поток оплаты (Stars, v1)
 1. `/subscription` в ЛС → инлайн-меню планов.
 2. `sendInvoice(currency="XTR", provider_token="", payload="chat_id:plan")`.
 3. `pre_checkout_query` → `answer_pre_checkout_query(ok=True)`.
@@ -326,6 +349,8 @@ make: install | migrate | run | test | lint
 - Автопостинг по расписанию.
 - White-label, API-доступ.
 - Рефанды (`refundStarPayment`), автопродление.
+- Провайдеры оплаты `CryptoBotProvider` / `StripeProvider` (в v1 — только Stars через
+  интерфейс `PaymentProvider`).
 - Горизонтальное масштабирование (несколько реплик бота): состояние уже в Redis, но
   распределение апдейтов и планировщика между репликами — на будущее.
 - Виральный бейдж «Работает на @ВашБот» в приветствии.
