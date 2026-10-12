@@ -86,6 +86,7 @@ tg-bot/
 │  │  └─ stats/                # /stats, /top
 │  ├─ services/
 │  │  ├─ subscriptions.py      # тарифы, лимиты, активация
+│  │  ├─ outgoing.py           # очередь исходящих вызовов + rate-limit 25 req/s
 │  │  └─ stats_service.py      # агрегация
 │  ├─ keyboards/
 │  └─ scheduler/jobs.py
@@ -149,6 +150,10 @@ transactions
 
 tier_limits                  -- справочник, заполняется сидом
   plan PK, max_members INT NULL(безлимит), price_stars INT, features JSONB
+
+ownership_claims             -- аудит смены владельца (осиротевшие чаты)
+  id BIGSERIAL, chat_id FK, claimant_id BIGINT,
+  prev_owner_id BIGINT, created_at
 ```
 
 ### Решения
@@ -166,11 +171,21 @@ tier_limits                  -- справочник, заполняется с�
 ```
 check_links(text, cfg) -> Violation | None       # url, t.me, @username, инвайты
 check_caps(text, cfg)  -> Violation | None       # доля заглавных > X и длина > N
-check_stopwords(text, cfg, words) -> Violation | None
+check_stopwords(text, matcher) -> Violation | None   # O(len(text)), см. ниже
 check_duplicates(state, chat_id, user_id, text, cfg) -> Violation | None
 check_flood(state, chat_id, user_id, cfg) -> Violation | None
 ```
 Каждое возвращает `Violation(type, severity)` или `None`.
+
+### Матчинг стоп-слов (Aho-Corasick)
+Линейный проход `for word in words: if word in text` даёт `O(N×M)` и убивает CPU на крупных
+чатах с большими списками. Поэтому:
+- список стоп-слов компилируется в автомат **Aho-Corasick** (`pyahocorasick`, C-расширение);
+- автомат **кэшируется по `chat_id`** и инвалидируется при изменении списка (через тот же
+  `invalidate`);
+- `check_stopwords` = один проход по тексту, `O(len(text) + matches)`.
+- Фоллбэк без C-расширения — скомпилированная альтернация `regex` (тоже кэшируется), если
+  `pyahocorasick` недоступен.
 
 ### Оркестратор (`antispam/engine.py`)
 ```
@@ -251,6 +266,18 @@ dup:{chat_id}:{user_id}      -> хэш текст→ts, SETEX на окно; п�
 - за 3 дня до `expires_at` → напоминание;
 - после `expires_at` → `is_active=false`, откат на `free`; статистика сохраняется.
 
+### Claim ownership (осиротевшие чаты)
+Если `owner_id` больше не администратор чата (ушёл или снят), чат «осиротеет»: настройки
+менять и оплачивать некому.
+- Job `subscription_lifecycle` раз в сутки через `getChatAdministrators` помечает чаты,
+  где `owner_id` отсутствует среди админов.
+- В таком чате действующий админ с правом `can_promote_members` получает кнопку
+  «Взять управление»; бот заново проверяет его права через `getChatAdministrators`.
+- При успехе: `owner_id` переносится, прежний владелец теряет доступ, факт пишется в
+  `ownership_claims` (аудит) и обеим сторонам уходит уведомление.
+- Защита от злоупотреблений: claim доступен только админам с правом назначения админов и
+  только пока прежний `owner_id` не в админах; повторные claim'ы логируются.
+
 ## 7. UX владельца, ошибки, dev/тесты
 
 ### ЛС бота — пульт владельца
@@ -266,6 +293,11 @@ dup:{chat_id}:{user_id}      -> хэш текст→ts, SETEX на окно; п�
 
 ### Ошибки и надёжность
 - Retry (tenacity) на `TelegramRetryAfter` и сетевые ошибки.
+- **Исходящая очередь с rate-limit:** все вызовы, меняющие состояние
+  (`deleteMessage`, `restrictChatMember`, `banChatMember` и т.п.), проходят через
+  token-bucket очередь с лимитом **25 req/s** (ниже глобального лимита Telegram ~30 req/s),
+  чтобы спам-рейд не упёрся в лимит API. Отправка сообщений учитывает per-chat ~1 msg/s.
+  Переполнение очереди → приоритезация модерации, отброс низкоприоритетных задач с логом.
 - Глобальный error handler: логирует, не роняет polling.
 - Структурированные логи (`structlog`), уровень из `.env`.
 
