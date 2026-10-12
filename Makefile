@@ -4,6 +4,9 @@ install:
 migrate:
 	alembic upgrade head
 
+seed:
+	alembic upgrade head
+
 run:
 	python -m app.main
 
