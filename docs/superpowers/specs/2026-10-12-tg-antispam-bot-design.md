@@ -38,22 +38,29 @@ aiogram 3 Dispatcher
    └─ background worker (APScheduler): flush_stats, daily_rollup,
                                        cleanup_logs, subscription_lifecycle
         │
-        ▼
-PostgreSQL (SQLAlchemy 2.0 async + Alembic)
+        ├──────────────► PostgreSQL (SQLAlchemy 2.0 async + Alembic)
+        │
+        └──────────────► Redis (состояние флуда/дублей, общее для реплик)
 ```
 
 ### Ключевые решения
 - **Кэш настроек в памяти** (`TTLCache`, TTL ~60 сек) — анти-спам middleware не обращается
-  к БД на каждое сообщение. Инвалидация при изменении настроек владельцем.
+  к БД на каждое сообщение. После записи в `/settings` вызывается явный
+  `ChatContext.invalidate(chat_id)`, чтобы админ видел изменения сразу; TTL — лишь страховка.
+- **Состояние флуда/дублей — в Redis** (общее для всех реплик, выживает рестарт процесса).
+  Используется один экземпляр в docker-compose; при недоступности Redis — **fail-open**
+  (сообщения пропускаются) с записью в лог/метрику, чтобы не блокировать живые чаты.
 - **Анти-спам и сбор статистики — в middleware**, вне хендлеров, чтобы правила нельзя
   было обойти.
 - **Статистика пишется батчами** из фонового job'а, а не в hot path.
+- **Graceful shutdown:** на SIGTERM/SIGINT перехватываем сигнал, останавливаем polling и
+  делаем синхронный flush буфера статистики в БД перед выходом.
 - **Polling** на старте; переход на webhook позже без изменения бизнес-логики.
 
 ### Структура каталогов
 ```
 tg-bot/
-├─ docker-compose.yml          # bot + postgres
+├─ docker-compose.yml          # bot + postgres + redis + migrate
 ├─ Dockerfile
 ├─ pyproject.toml              # зависимости, ruff, pytest
 ├─ alembic.ini
@@ -65,6 +72,7 @@ tg-bot/
 │  ├─ db/base.py               # async engine/session
 │  ├─ db/models.py             # SQLAlchemy модели
 │  ├─ repositories/            # доступ к данным
+│  ├─ state/redis.py           # клиент Redis: state флуда/дублей, TTL-ключи
 │  ├─ middlewares/
 │  │  ├─ chat_context.py
 │  │  ├─ antispam.py
@@ -177,11 +185,19 @@ engine.evaluate(message, settings, stopwords, state) -> Decision(action, reason)
 - Срабатывание логируется в `messages_log(violation=...)`.
 
 ### Состояние окна (flood/duplicates)
-In-memory `dict[(chat_id,user_id)] -> deque(timestamps, texts)` с TTL-очисткой.
-Однопроцессный MVP.
+Хранится в **Redis**, ключи с TTL = `flood_window_sec` (автоочистка без ручного GC):
 
-**Известное ограничение:** при горизонтальном масштабировании состояние выносится в Redis
-(не входит в MVP).
+```
+flood:{chat_id}:{user_id}    -> ZADD timestamp (score=ts), ZREMRANGEBYSCORE (окно),
+                                ZCARD → счётчик
+dup:{chat_id}:{user_id}      -> хэш текст→ts, SETEX на окно; проверка точного повтора
+```
+- `check_flood`/`check_duplicates` читают и пишут счётчики в Redis — состояние общее для
+  всех реплик и переживает рестарт процесса.
+- Недоступность Redis → **fail-open**: правило пропускается, событие логируется; модерация
+  деградирует мягко, но чат не блокируется.
+- Атомарность инкремента — через Lua-скрипт или `MULTI`, чтобы избежать гонок между
+  репликами.
 
 ### Middleware
 `outer middleware` на `Message` и `ChatMemberUpdated`. Настройки — из кэша ChatContext.
@@ -255,14 +271,22 @@ In-memory `dict[(chat_id,user_id)] -> deque(timestamps, texts)` с TTL-очис�
 
 ### Dev/Docker
 ```
-docker-compose.yml: postgres:16 + bot
-Dockerfile: python:3.12-slim, non-root, entrypoint = alembic upgrade head && python -m app.main
-.env.example: BOT_TOKEN, DATABASE_URL, LOG_LEVEL, SUPERADMIN_IDS
+docker-compose.yml:
+  postgres:16
+  redis:7
+  migrate   — одноразовый init-контейнер: alembic upgrade head, затем exit
+  bot       — depends_on: [postgres, redis, migrate(completed)], без миграций в entrypoint
+Dockerfile: python:3.12-slim, non-root, entrypoint = python -m app.main
+.env.example: BOT_TOKEN, DATABASE_URL, REDIS_URL, LOG_LEVEL, SUPERADMIN_IDS
 make: install | migrate | run | test | lint
 ```
-- Миграции только Alembic, `alembic upgrade head` на старте.
-- Тесты: юнит — правила анти-спама и `subscriptions.has_feature`; интеграционные —
-  репозитории/апсерты против postgres из compose (`pytest`, `pytest-asyncio`).
+- Миграции только Alembic и только в сервисе `migrate` (не в entrypoint бота), чтобы
+  исключить гонку при запуске >1 реплики.
+- В compose бот стартует после успешного завершения `migrate`
+  (`depends_on: { migrate: { condition: service_completed_successfully } }`).
+- Тесты: юнит — правила анти-спама и `subscriptions.has_feature` (state — через
+  `fakeredis`); интеграционные — репозитории/апсерты против postgres из compose
+  (`pytest`, `pytest-asyncio`).
 - Линт/формат — `ruff`. GitHub Actions (lint+test) — опционально.
 
 ## 8. Вне границ MVP
@@ -270,5 +294,6 @@ make: install | migrate | run | test | lint
 - Автопостинг по расписанию.
 - White-label, API-доступ.
 - Рефанды (`refundStarPayment`), автопродление.
-- Redis для состояния и горизонтальное масштабирование.
+- Горизонтальное масштабирование (несколько реплик бота): состояние уже в Redis, но
+  распределение апдейтов и планировщика между репликами — на будущее.
 - Виральный бейдж «Работает на @ВашБот» в приветствии.
