@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tg-community-bot"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "aiogram>=3.15",
+  "SQLAlchemy>=2.0",
+  "alembic>=1.13",
+  "asyncpg",
+  "redis>=5.0",
+  "pydantic-settings>=2.4",
+  "APScheduler>=3.10",
+  "structlog>=24.1",
+  "tenacity>=8.5",
+  "pyahocorasick>=2.1",
+  "matplotlib>=3.9",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.24", "fakeredis>=2.24", "ruff>=0.6"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
