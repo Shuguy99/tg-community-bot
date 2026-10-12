@@ -73,7 +73,8 @@ class ChatSettings(Base):
     flood_limit: Mapped[int] = mapped_column(SmallInteger, default=5)
     flood_window_sec: Mapped[int] = mapped_column(SmallInteger, default=10)
     action: Mapped[ViolationAction] = mapped_column(
-        SAEnum(ViolationAction, name="violation_action"), default=ViolationAction.DELETE
+        SAEnum(ViolationAction, name="violation_action", values_callable=lambda e: [m.value for m in e]),
+        default=ViolationAction.DELETE,
     )
     warn_limit: Mapped[int] = mapped_column(SmallInteger, default=3)
     mute_minutes: Mapped[int] = mapped_column(SmallInteger, default=60)
@@ -134,7 +135,9 @@ class Subscription(Base):
     __tablename__ = "subscriptions"
 
     chat_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("chats.id"), primary_key=True)
-    plan: Mapped[Plan] = mapped_column(SAEnum(Plan, name="plan"), default=Plan.FREE)
+    plan: Mapped[Plan] = mapped_column(
+        SAEnum(Plan, name="plan", values_callable=lambda e: [m.value for m in e]), default=Plan.FREE
+    )
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -158,7 +161,9 @@ class Transaction(Base):
 class TierLimit(Base):
     __tablename__ = "tier_limits"
 
-    plan: Mapped[Plan] = mapped_column(SAEnum(Plan, name="plan"), primary_key=True)
+    plan: Mapped[Plan] = mapped_column(
+        SAEnum(Plan, name="plan", values_callable=lambda e: [m.value for m in e]), primary_key=True
+    )
     max_members: Mapped[int | None] = mapped_column(Integer, nullable=True)
     price_stars: Mapped[int] = mapped_column(Integer, default=0)
     features: Mapped[dict] = mapped_column(JSONB, default=dict)
