@@ -5,6 +5,7 @@ Revises:
 Create Date: 2026-10-12
 """
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 from alembic import op
 from app.db import models  # noqa: F401
@@ -39,8 +40,11 @@ def downgrade() -> None:
 def sa_tier_table():
     return sa.table(
         "tier_limits",
-        sa.column("plan", sa.String),
+        sa.column(
+            "plan",
+            postgresql.ENUM("free", "pro", "corporate", name="plan", create_type=False),
+        ),
         sa.column("max_members", sa.Integer),
         sa.column("price_stars", sa.Integer),
-        sa.column("features", sa.dialects.postgresql.JSONB),
+        sa.column("features", postgresql.JSONB),
     )
