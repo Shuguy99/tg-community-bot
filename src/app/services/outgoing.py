@@ -4,7 +4,14 @@ from collections.abc import Awaitable, Callable
 
 import structlog
 
+from app.services.retry import retry_async
+
 log = structlog.get_logger()
+
+
+@retry_async()
+async def _run(coro_factory):
+    return await coro_factory()
 
 
 class TokenBucket:
@@ -58,7 +65,7 @@ class OutgoingQueue:
             _, _, coro_factory = await self._queue.get()
             try:
                 await self._bucket.acquire()
-                await coro_factory()
+                await _run(coro_factory)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
