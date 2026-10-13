@@ -11,18 +11,50 @@ class ChatRepo:
     async def get(self, chat_id: int) -> Chat | None:
         return await self.session.get(Chat, chat_id)
 
-    async def upsert(self, chat_id, type, title, owner_id, member_count) -> Chat:
+    async def upsert(
+        self,
+        chat_id: int,
+        type: str,
+        title: str,
+        owner_id: int | None,
+        member_count: int,
+        *,
+        is_active: bool = True,
+    ) -> Chat:
+        update_set: dict = {
+            "title": title,
+            "member_count": member_count,
+            "type": type,
+            "is_active": is_active,
+        }
+        if owner_id is not None:
+            update_set["owner_id"] = owner_id
         stmt = (
             insert(Chat)
-            .values(id=chat_id, type=type, title=title, owner_id=owner_id, member_count=member_count)
-            .on_conflict_do_update(
-                index_elements=[Chat.id],
-                set_={"title": title, "member_count": member_count, "type": type},
+            .values(
+                id=chat_id,
+                type=type,
+                title=title,
+                owner_id=owner_id,
+                member_count=member_count,
+                is_active=is_active,
             )
+            .on_conflict_do_update(index_elements=[Chat.id], set_=update_set)
         )
         await self.session.execute(stmt)
         await self.session.flush()
         return await self.get(chat_id)
+
+    async def ensure(self, chat_id: int, type: str, title: str) -> None:
+        stmt = (
+            insert(Chat)
+            .values(id=chat_id, type=type, title=title, owner_id=None, member_count=0)
+            .on_conflict_do_nothing(index_elements=[Chat.id])
+        )
+        await self.session.execute(stmt)
+
+    async def set_active(self, chat_id: int, active: bool) -> None:
+        await self.session.execute(update(Chat).where(Chat.id == chat_id).values(is_active=active))
 
     async def set_member_count(self, chat_id: int, count: int) -> None:
         await self.session.execute(update(Chat).where(Chat.id == chat_id).values(member_count=count))

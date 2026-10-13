@@ -9,6 +9,7 @@ class Deps:
     state: Any
     outgoing: Any
     subscriptions: Any
+    provisioning: Any = None
 
 
 _deps: Deps | None = None

@@ -78,6 +78,7 @@ class ChatContextMiddleware(BaseMiddleware):
             async with self._db.session() as session:
                 settings = self._settings_cache.get(chat.id)
                 if settings is None:
+                    await ChatRepo(session).ensure(chat.id, chat.type, getattr(chat, "title", "") or "")
                     settings = await SettingsRepo(session).get_or_create(chat.id)
                     await session.commit()
                     self._settings_cache.set(chat.id, settings)
