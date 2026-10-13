@@ -105,7 +105,7 @@ async def build_app(settings: Settings) -> App:
 
 
 async def shutdown(app: App) -> None:
-    app.scheduler.shutdown(wait=True)
+    app.scheduler.shutdown(wait=False)
     await app.stats_service.flush()
     await app.outgoing.stop(drain=True)
     await app.redis.aclose()

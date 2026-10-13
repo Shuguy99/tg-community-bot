@@ -76,6 +76,13 @@ class StatsBuffer:
         self._messages, self._joins, self._leaves = [], Counter(), Counter()
         return messages, joins, leaves
 
+    def _discard(self, messages_count: int, joins: Counter, leaves: Counter) -> None:
+        del self._messages[:messages_count]
+        for chat_id, count in joins.items():
+            self._joins[chat_id] = max(0, self._joins[chat_id] - count)
+        for chat_id, count in leaves.items():
+            self._leaves[chat_id] = max(0, self._leaves[chat_id] - count)
+
 
 class StatsService:
     def __init__(self, db, buffer: StatsBuffer):
@@ -85,7 +92,9 @@ class StatsService:
     async def flush(self) -> int:
         from app.repositories.stats import StatsRepo
 
-        messages, joins, leaves = self._buffer._drain()
+        messages = list(self._buffer._messages)
+        joins = Counter(self._buffer._joins)
+        leaves = Counter(self._buffer._leaves)
         if not messages and not joins and not leaves:
             return 0
         day = datetime.now(UTC).date()
@@ -106,6 +115,7 @@ class StatsService:
                 for _ in range(count):
                     await repo.bump_leave(chat_id, day)
             await session.commit()
+        self._buffer._discard(len(messages), joins, leaves)
         log.info("stats_flushed", messages=len(messages))
         return len(messages)
 

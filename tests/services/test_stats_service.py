@@ -3,6 +3,23 @@ from datetime import date
 from app.services.stats_service import aggregate_user_rows
 
 
+def test_discard_removes_only_snapshot():
+    from collections import Counter
+
+    from app.services.stats_service import StatsBuffer
+
+    buffer = StatsBuffer()
+    buffer.record_message(1, 10, 1)
+    buffer.record_message(1, 10, 2)
+    snapshot = list(buffer._messages)
+    joins = Counter(buffer._joins)
+    leaves = Counter(buffer._leaves)
+    buffer.record_message(1, 10, 3)
+    buffer._discard(len(snapshot), joins, leaves)
+    assert [m["message_id"] for m in buffer._messages] == [3]
+    assert len(buffer._messages) == 1
+
+
 def test_aggregate_user_rows_groups_and_totals():
     events = [
         {"chat_id": 1, "user_id": 10, "is_deleted": False},

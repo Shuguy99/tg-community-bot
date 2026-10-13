@@ -53,13 +53,18 @@ class AntiSpamMiddleware(BaseMiddleware):
         action, should_warn = resolve_action(decision.action, warn_count, ctx.settings.warn_limit)
         self._warns[warn_key] = warn_count
 
-        await self._outgoing.submit(lambda: self._bot.delete_message(event.chat.id, event.message_id), priority=0)
+        await self._outgoing.submit(
+            lambda: self._bot.delete_message(event.chat.id, event.message_id),
+            priority=0,
+            chat_id=event.chat.id,
+        )
         if action == ViolationAction.MUTE:
             until = datetime.now(UTC) + timedelta(minutes=ctx.settings.mute_minutes)
             perms = ChatPermissions(can_send_messages=False)
             await self._outgoing.submit(
                 lambda: self._bot.restrict_chat_member(event.chat.id, user.id, perms, until_date=until),
                 priority=0,
+                chat_id=event.chat.id,
             )
         elif should_warn:
             await self._outgoing.submit(
@@ -67,6 +72,8 @@ class AntiSpamMiddleware(BaseMiddleware):
                     event.chat.id, f"@{user.username or user.id}, нарушение: {decision.violation.type.value}"
                 ),
                 priority=5,
+                chat_id=event.chat.id,
+                retry=False,
             )
 
         self._buffer.record_message(
