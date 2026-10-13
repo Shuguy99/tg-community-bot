@@ -1,8 +1,8 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import structlog
 from aiogram import BaseMiddleware
-from aiogram.types import ChatPermissions, Message, TelegramObject
+from aiogram.types import ChatPermissions, Message
 
 from app.antispam.engine import evaluate
 from app.db.models import ViolationAction
@@ -55,7 +55,7 @@ class AntiSpamMiddleware(BaseMiddleware):
 
         await self._outgoing.submit(lambda: self._bot.delete_message(event.chat.id, event.message_id), priority=0)
         if action == ViolationAction.MUTE:
-            until = datetime.now(timezone.utc) + timedelta(minutes=ctx.settings.mute_minutes)
+            until = datetime.now(UTC) + timedelta(minutes=ctx.settings.mute_minutes)
             perms = ChatPermissions(can_send_messages=False)
             await self._outgoing.submit(
                 lambda: self._bot.restrict_chat_member(event.chat.id, user.id, perms, until_date=until),

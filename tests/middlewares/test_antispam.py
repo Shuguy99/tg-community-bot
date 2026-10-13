@@ -1,7 +1,5 @@
-# tests/middlewares/test_antispam.py
-from app.antispam.rules import Violation, ViolationType
-from app.middlewares.antispam import resolve_action
 from app.db.models import ViolationAction
+from app.middlewares.antispam import resolve_action
 
 
 def test_resolve_delete():
