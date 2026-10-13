@@ -37,4 +37,5 @@ target-version = "py312"
 
 [tool.ruff.lint.per-file-ignores]
 "src/app/state/redis.py" = ["BLE001"]
+"src/app/services/outgoing.py" = ["BLE001"]
 "tests/antispam/test_engine.py" = ["C408"]
