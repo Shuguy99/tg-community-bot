@@ -88,7 +88,7 @@ async def build_app(settings: Settings) -> App:
 
 
 async def shutdown(app: App) -> None:
-    app.scheduler.shutdown(wait=False)
+    app.scheduler.shutdown(wait=True)
     await app.stats_service.flush()
     await app.outgoing.stop(drain=True)
     await app.redis.aclose()
@@ -113,11 +113,13 @@ async def run() -> None:
         loop.add_signal_handler(sig, _signal)
 
     polling = asyncio.create_task(app.dispatcher.start_polling(app.bot))
-    await stop.wait()
-    log.info("shutdown_requested")
-    await app.dispatcher.stop_polling()
-    await polling
-    await shutdown(app)
+    try:
+        await stop.wait()
+        log.info("shutdown_requested")
+        await app.dispatcher.stop_polling()
+        await polling
+    finally:
+        await shutdown(app)
 
 
 if __name__ == "__main__":
