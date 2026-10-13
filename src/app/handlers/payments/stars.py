@@ -8,7 +8,9 @@ from aiogram.types import (
     PreCheckoutQuery,
 )
 
+from app.handlers.access import is_owner, owner_chats
 from app.handlers.deps import get_deps
+from app.keyboards.settings import build_chat_picker
 
 payments_router = Router(name="payments")
 
@@ -20,25 +22,47 @@ def plan_keyboard(chat_id: int) -> InlineKeyboardMarkup:
     ])
 
 
-@payments_router.message(Command("subscription"))
+@payments_router.message(Command("subscription"), F.chat.type == "private")
 async def subscription(message: Message):
     deps = get_deps()
-    async with deps.db.session() as session:
-        from app.repositories.chats import ChatRepo
-
-        chats = await ChatRepo(session).list_by_owner(message.from_user.id)
+    chats = await owner_chats(deps, message.from_user.id)
     if not chats:
-        await message.answer("Сначала добавь бота в чат.")
+        await message.answer("Сначала добавь бота в чат через /start.")
         return
-    await message.answer("Выбери тариф:", reply_markup=plan_keyboard(chats[0].id))
+    if len(chats) == 1:
+        await message.answer("Выбери тариф:", reply_markup=plan_keyboard(chats[0].id))
+        return
+    picker = build_chat_picker([(c.id, c.title or str(c.id)) for c in chats], prefix="sub")
+    await message.answer("Выбери чат:", reply_markup=picker)
+
+
+@payments_router.callback_query(F.data.startswith("sub:"))
+async def on_sub_menu(cb: CallbackQuery):
+    _, chat_id, _action = cb.data.split(":")
+    chat_id = int(chat_id)
+    deps = get_deps()
+    if not await is_owner(deps, chat_id, cb.from_user.id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    await cb.message.answer("Выбери тариф:", reply_markup=plan_keyboard(chat_id))
+    await cb.answer()
 
 
 @payments_router.callback_query(F.data.startswith("buy:"))
 async def buy(cb: CallbackQuery):
     _, chat_id, plan = cb.data.split(":")
+    chat_id = int(chat_id)
     deps = get_deps()
-    link = await deps.stars_provider.create_invoice(int(chat_id), plan)
-    await cb.message.answer(f"Оплатить: {link}")
+    if not await is_owner(deps, chat_id, cb.from_user.id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    link = await deps.stars_provider.create_invoice(chat_id, plan)
+    await cb.message.answer(
+        f"Оплата тарифа {plan} (30 дней):",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="Оплатить", url=link)]]
+        ),
+    )
     await cb.answer()
 
 
