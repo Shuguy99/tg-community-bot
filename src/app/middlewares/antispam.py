@@ -7,7 +7,6 @@ from aiogram.types import ChatPermissions, Message
 from app.antispam.engine import evaluate
 from app.db.models import ViolationAction
 from app.middlewares.chat_context import ChatContext
-from app.repositories.stats import StatsRepo
 
 log = structlog.get_logger()
 
@@ -21,11 +20,12 @@ def resolve_action(action: ViolationAction, warn_count: int, warn_limit: int) ->
 
 
 class AntiSpamMiddleware(BaseMiddleware):
-    def __init__(self, db, state_store, outgoing, bot):
+    def __init__(self, db, state_store, outgoing, bot, buffer):
         self._db = db
         self._state = state_store
         self._outgoing = outgoing
         self._bot = bot
+        self._buffer = buffer
         self._warns: dict[tuple[int, int], int] = {}
 
     async def __call__(self, handler, event: Message, data: dict):
@@ -53,13 +53,18 @@ class AntiSpamMiddleware(BaseMiddleware):
         action, should_warn = resolve_action(decision.action, warn_count, ctx.settings.warn_limit)
         self._warns[warn_key] = warn_count
 
-        await self._outgoing.submit(lambda: self._bot.delete_message(event.chat.id, event.message_id), priority=0)
+        await self._outgoing.submit(
+            lambda: self._bot.delete_message(event.chat.id, event.message_id),
+            priority=0,
+            chat_id=event.chat.id,
+        )
         if action == ViolationAction.MUTE:
             until = datetime.now(UTC) + timedelta(minutes=ctx.settings.mute_minutes)
             perms = ChatPermissions(can_send_messages=False)
             await self._outgoing.submit(
                 lambda: self._bot.restrict_chat_member(event.chat.id, user.id, perms, until_date=until),
                 priority=0,
+                chat_id=event.chat.id,
             )
         elif should_warn:
             await self._outgoing.submit(
@@ -67,20 +72,11 @@ class AntiSpamMiddleware(BaseMiddleware):
                     event.chat.id, f"@{user.username or user.id}, нарушение: {decision.violation.type.value}"
                 ),
                 priority=5,
+                chat_id=event.chat.id,
+                retry=False,
             )
 
-        await self._log(event, user.id, decision.violation.type.value)
+        self._buffer.record_message(
+            event.chat.id, user.id, event.message_id, is_deleted=True, violation=decision.violation.type.value
+        )
         return None
-
-    async def _log(self, event: Message, user_id: int, violation: str) -> None:
-        async with self._db.session() as session:
-            await StatsRepo(session).insert_message_logs(
-                [{
-                    "chat_id": event.chat.id,
-                    "user_id": user_id,
-                    "message_id": event.message_id,
-                    "is_deleted": True,
-                    "violation": violation,
-                }]
-            )
-            await session.commit()

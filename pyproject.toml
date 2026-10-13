@@ -39,4 +39,5 @@ target-version = "py312"
 "src/app/state/redis.py" = ["BLE001"]
 "src/app/services/outgoing.py" = ["BLE001"]
 "src/app/services/subscriptions.py" = ["BLE001"]
+"src/app/services/provisioning.py" = ["BLE001"]
 "tests/antispam/test_engine.py" = ["C408"]

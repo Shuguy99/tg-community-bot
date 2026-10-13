@@ -1,4 +1,5 @@
 import asyncio
+import heapq
 import time
 from collections.abc import Awaitable, Callable
 
@@ -38,15 +39,45 @@ class TokenBucket:
 
 
 class OutgoingQueue:
-    def __init__(self, bucket: TokenBucket):
+    def __init__(
+        self,
+        bucket: TokenBucket,
+        max_pending: int = 1000,
+        per_chat_interval: float = 1.0,
+        monotonic=time.monotonic,
+    ):
         self._bucket = bucket
-        self._queue: asyncio.PriorityQueue = asyncio.PriorityQueue()
-        self._workers: list[asyncio.Task] = []
+        self._max_pending = max_pending
+        self._per_chat_interval = per_chat_interval
+        self._monotonic = monotonic
+        self._heap: list[tuple[int, int, Callable[[], Awaitable], int | None, bool]] = []
+        self._cond = asyncio.Condition()
         self._counter = 0
+        self._inflight = 0
+        self._workers: list[asyncio.Task] = []
+        self._chat_locks: dict[int, asyncio.Lock] = {}
+        self._chat_last: dict[int, float] = {}
 
-    async def submit(self, coro_factory: Callable[[], Awaitable], *, priority: int = 0) -> None:
-        self._counter += 1
-        await self._queue.put((priority, self._counter, coro_factory))
+    async def submit(
+        self,
+        coro_factory: Callable[[], Awaitable],
+        *,
+        priority: int = 0,
+        chat_id: int | None = None,
+        retry: bool = True,
+    ) -> None:
+        async with self._cond:
+            if len(self._heap) >= self._max_pending:
+                worst = max(range(len(self._heap)), key=lambda i: self._heap[i][0])
+                if self._heap[worst][0] <= priority:
+                    log.warning("outgoing_dropped", priority=priority, chat_id=chat_id)
+                    return
+                log.warning("outgoing_evicted", priority=self._heap[worst][0], chat_id=chat_id)
+                self._heap.pop(worst)
+                heapq.heapify(self._heap)
+            self._counter += 1
+            heapq.heappush(self._heap, (priority, self._counter, coro_factory, chat_id, retry))
+            self._cond.notify()
 
     async def start(self, n_workers: int = 4) -> None:
         for _ in range(n_workers):
@@ -54,7 +85,8 @@ class OutgoingQueue:
 
     async def stop(self, drain: bool = True) -> None:
         if drain:
-            await self._queue.join()
+            async with self._cond:
+                await self._cond.wait_for(lambda: not self._heap and self._inflight == 0)
         for task in self._workers:
             task.cancel()
         await asyncio.gather(*self._workers, return_exceptions=True)
@@ -62,13 +94,32 @@ class OutgoingQueue:
 
     async def _worker(self) -> None:
         while True:
-            _, _, coro_factory = await self._queue.get()
+            async with self._cond:
+                while not self._heap:
+                    await self._cond.wait()
+                _, _, coro_factory, chat_id, retry = heapq.heappop(self._heap)
+                self._inflight += 1
             try:
                 await self._bucket.acquire()
-                await _run(coro_factory)
+                if chat_id is not None:
+                    await self._throttle(chat_id)
+                if retry:
+                    await _run(coro_factory)
+                else:
+                    await coro_factory()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 log.error("outgoing_task_failed", error=str(exc))
             finally:
-                self._queue.task_done()
+                async with self._cond:
+                    self._inflight -= 1
+                    self._cond.notify_all()
+
+    async def _throttle(self, chat_id: int) -> None:
+        lock = self._chat_locks.setdefault(chat_id, asyncio.Lock())
+        async with lock:
+            wait = self._per_chat_interval - (self._monotonic() - self._chat_last.get(chat_id, 0.0))
+            if wait > 0:
+                await asyncio.sleep(wait)
+            self._chat_last[chat_id] = self._monotonic()

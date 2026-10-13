@@ -41,7 +41,7 @@ class Chat(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     type: Mapped[str] = mapped_column(String(32))
     title: Mapped[str] = mapped_column(String(255), default="")
-    owner_id: Mapped[int] = mapped_column(BigInteger)
+    owner_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     member_count: Mapped[int] = mapped_column(Integer, default=0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
