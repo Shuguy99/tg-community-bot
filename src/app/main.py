@@ -72,7 +72,7 @@ async def build_app(settings: Settings) -> App:
 
     stopword_cache = StopwordCache(db, ttl=60)
     chat_context = ChatContextMiddleware(db, stopword_cache, ttl=60)
-    antispam = AntiSpamMiddleware(db, state, outgoing, bot)
+    antispam = AntiSpamMiddleware(db, state, outgoing, bot, buffer)
     stats_collector = StatsCollectorMiddleware(buffer)
 
     dp = Dispatcher()
